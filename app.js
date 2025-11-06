@@ -78,7 +78,10 @@ io.use((socket, next) => {
 
 io.on("connection", (socket) => {
   const user = socket.user;
-  userSocketIDs.set(user._id.toString(), socket.id);
+  const key = user._id.toString();
+  const set = userSocketIDs.get(key) || new Set();
+  set.add(socket.id);
+  userSocketIDs.set(key, set);
 
   socket.on(NEW_MESSAGE, async ({ chatId, members, message }) => {
     // Validate same-organization before sending real-time messages
@@ -147,8 +150,17 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    userSocketIDs.delete(user._id.toString());
-    onlineUsers.delete(user._id.toString());
+    const key = user._id.toString();
+    const set = userSocketIDs.get(key);
+    if (set) {
+      set.delete(socket.id);
+      if (set.size === 0) {
+        userSocketIDs.delete(key);
+        onlineUsers.delete(key);
+      } else {
+        userSocketIDs.set(key, set);
+      }
+    }
     socket.broadcast.emit(ONLINE_USERS, Array.from(onlineUsers));
   });
 });
