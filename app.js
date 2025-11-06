@@ -19,8 +19,10 @@ import {
 } from "./constants/events.js";
 import { getSockets } from "./lib/helper.js";
 import { Message } from "./models/message.js";
+import { Chat } from "./models/chat.js";
 import { corsOptions } from "./constants/config.js";
 import { socketAuthenticator } from "./middlewares/auth.js";
+import { allMembersShareOrgWith } from "./lib/orgValidator.js";
 
 import userRoute from "./routes/user.js";
 import chatRoute from "./routes/chat.js";
@@ -79,6 +81,16 @@ io.on("connection", (socket) => {
   userSocketIDs.set(user._id.toString(), socket.id);
 
   socket.on(NEW_MESSAGE, async ({ chatId, members, message }) => {
+    // Validate same-organization before sending real-time messages
+    try {
+      const chat = await Chat.findById(chatId);
+      if (!chat) return;
+      const sameOrg = await allMembersShareOrgWith(user._id, chat.members);
+      if (!sameOrg) return; // silently drop cross-org attempts
+    } catch (e) {
+      return;
+    }
+
     const messageForRealTime = {
       content: message,
       _id: uuid(),

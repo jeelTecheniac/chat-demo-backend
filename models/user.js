@@ -31,6 +31,12 @@ const schema = new Schema(
         required: true,
       },
     },
+    joinedOrganizations: [
+      {
+        type: mongoose.Types.ObjectId,
+        ref: "Organization",
+      },
+    ],
   },
   {
     timestamps: true,

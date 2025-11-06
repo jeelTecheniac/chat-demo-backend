@@ -10,7 +10,6 @@ import {
   newGroupChat,
   removeMember,
   renameGroup,
-  sendAttachments,
 } from "../controllers/chat.js";
 import {
   addMemberValidator,
@@ -52,8 +51,7 @@ app.post(
   "/message",
   attachmentsMulter,
   sendAttachmentsValidator(),
-  validateHandler,
-  sendAttachments
+  validateHandler
 );
 
 // Get Messages

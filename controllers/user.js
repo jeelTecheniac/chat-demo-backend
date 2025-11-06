@@ -5,6 +5,7 @@ import { TryCatch } from "../middlewares/error.js";
 import { Chat } from "../models/chat.js";
 import { Request } from "../models/request.js";
 import { User } from "../models/user.js";
+import { Organization } from "../models/organization.js";
 import mongoose from "mongoose";
 import {
   cookieOptions,
@@ -13,9 +14,16 @@ import {
   uploadFilesToCloudinary,
 } from "../utils/features.js";
 import { ErrorHandler } from "../utils/utility.js";
+import { usersShareOrganization } from "../lib/orgValidator.js";
 // Create a new user and save it to the database and save token in cookie
 const newUser = TryCatch(async (req, res, next) => {
-  const { name, username, password, bio } = req.body;
+  const {
+    name,
+    username,
+    password,
+    bio,
+    Organization: organizationId,
+  } = req.body;
 
   const file = req.file;
 
@@ -28,12 +36,25 @@ const newUser = TryCatch(async (req, res, next) => {
     url: result[0].url,
   };
 
+  let joinedOrganizations = [];
+  if (organizationId && String(organizationId).trim() !== "") {
+    if (!mongoose.isValidObjectId(organizationId)) {
+      return next(new ErrorHandler("Invalid Organization ID", 400));
+    }
+    const organizationResult = await Organization.findById(organizationId);
+    if (!organizationResult) {
+      return next(new ErrorHandler("Organization not found", 404));
+    }
+    joinedOrganizations = [organizationId];
+  }
+
   const user = await User.create({
     name,
     bio,
     username,
     password,
     avatar,
+    joinedOrganizations,
   });
 
   sendToken(res, user, 201, "User created");
@@ -78,21 +99,42 @@ const logout = TryCatch(async (req, res) => {
 const searchUser = TryCatch(async (req, res) => {
   const { name = "" } = req.query;
 
-  // Finding All my chats
+  // Finding the current user's organizations
+  const currentUser = await User.findById(req.user).select(
+    "joinedOrganizations"
+  );
+
+  // Check if the user has joined any organizations
+  if (currentUser.joinedOrganizations.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "You have not joined any organizations yet.",
+    });
+  }
+
+  // Assuming that the user can only search for other users in their organizations
+  // You can choose the first organization, or you can customize this logic to allow multiple orgs
+  const organizationId = currentUser.joinedOrganizations[0];
+
+  // Finding all the user's chats (excluding group chats)
   const myChats = await Chat.find({ groupChat: false, members: req.user });
 
-  //  extracting All Users from my chats means friends or people I have chatted with
+  // Extracting all users from the user's chats (friends or people they have chatted with)
   const allUsersFromMyChats = myChats.flatMap((chat) => chat.members);
-  // Finding all users except me and my friends
-  const val= new mongoose.Types.ObjectId(req.user)
-  if(allUsersFromMyChats.length==0)allUsersFromMyChats.push(val)
-   console.log(allUsersFromMyChats)
+  const val = new mongoose.Types.ObjectId(req.user);
+
+  if (allUsersFromMyChats.length === 0) allUsersFromMyChats.push(val);
+
+  console.log(allUsersFromMyChats);
+
+  // Find all users within the same organization as the current user
   const allUsersExceptMeAndFriends = await User.find({
     _id: { $nin: allUsersFromMyChats },
     name: { $regex: name, $options: "i" },
+    joinedOrganizations: { $in: [organizationId] }, // Ensure users are in the same organization
   });
 
-  // Modifying the response
+  // Prepare the response with necessary user details
   const users = allUsersExceptMeAndFriends.map(({ _id, name, avatar }) => ({
     _id,
     name,
@@ -107,6 +149,18 @@ const searchUser = TryCatch(async (req, res) => {
 
 const sendFriendRequest = TryCatch(async (req, res, next) => {
   const { userId } = req.body;
+  console.log("Send Friend Request to User ID:", userId);
+
+  // Block cross-organization requests
+  const sameOrg = await usersShareOrganization(req.user, userId);
+  console.log("Users share organization:", sameOrg);
+  if (!sameOrg)
+    return next(
+      new ErrorHandler(
+        "You can only send friend requests within your organization",
+        403
+      )
+    );
 
   const request = await Request.findOne({
     $or: [
@@ -154,6 +208,16 @@ const acceptFriendRequest = TryCatch(async (req, res, next) => {
   }
 
   const members = [request.sender._id, request.receiver._id];
+
+  // Ensure both are in the same organization before creating a direct chat
+  const sameOrg = await usersShareOrganization(members[0], members[1]);
+  if (!sameOrg)
+    return next(
+      new ErrorHandler(
+        "You can only create chats within your organization",
+        403
+      )
+    );
 
   await Promise.all([
     Chat.create({
@@ -230,6 +294,61 @@ const getMyFriends = TryCatch(async (req, res) => {
   }
 });
 
+const createOrganization = TryCatch(async (req, res, next) => {
+  const { organizationName } = req.body;
+
+  // Check if the organization name is provided and is not empty
+  if (!organizationName || organizationName.trim().length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Organization name is required and cannot be empty.",
+    });
+  }
+
+  try {
+    // Create the organization
+    const organization = await Organization.create({
+      name: organizationName,
+      creator: req.user,
+    });
+
+    // Add the user (creator) to the joinedOrganizations array
+    await User.findByIdAndUpdate(req.user, {
+      $push: { joinedOrganizations: organization._id },
+    });
+
+    // Respond with the created organization
+    return res.status(201).json({
+      success: true,
+      organization,
+    });
+  } catch (error) {
+    console.error("Error creating organization:", error);
+    return res.status(500).json({
+      success: false,
+      message: "There was an error creating the organization.",
+    });
+  }
+});
+
+const getMyOrganizations = TryCatch(async (req, res, next) => {
+  const organizations = await Organization.find({ creator: req.user }).sort({
+    createdAt: -1,
+  });
+  res.status(200).json({ success: true, organizations });
+});
+
+const getJoinedOrganizations = TryCatch(async (req, res, next) => {
+  const joinedOrganizations = await User.findById(req.user).populate(
+    "joinedOrganizations"
+  );
+  console.log(joinedOrganizations);
+  res.status(200).json({
+    success: true,
+    organizations: joinedOrganizations.joinedOrganizations,
+  });
+});
+
 export {
   acceptFriendRequest,
   getMyFriends,
@@ -240,4 +359,7 @@ export {
   newUser,
   searchUser,
   sendFriendRequest,
+  createOrganization,
+  getMyOrganizations,
+  getJoinedOrganizations,
 };
