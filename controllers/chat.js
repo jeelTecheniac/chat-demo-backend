@@ -1,11 +1,7 @@
 import { TryCatch } from "../middlewares/error.js";
 import { ErrorHandler } from "../utils/utility.js";
 import { Chat } from "../models/chat.js";
-import {
-  deletFilesFromCloudinary,
-  emitEvent,
-  uploadFilesToCloudinary,
-} from "../utils/features.js";
+import { deletFilesFromCloudinary, emitEvent } from "../utils/features.js";
 import {
   ALERT,
   NEW_MESSAGE,
@@ -15,11 +11,22 @@ import {
 import { getOtherMember } from "../lib/helper.js";
 import { User } from "../models/user.js";
 import { Message } from "../models/message.js";
+import { allMembersShareOrgWith } from "../lib/orgValidator.js";
 
 const newGroupChat = TryCatch(async (req, res, next) => {
   const { name, members } = req.body;
 
   const allMembers = [...members, req.user];
+
+  // Block cross-organization group creation
+  const sameOrg = await allMembersShareOrgWith(req.user, members);
+  if (!sameOrg)
+    return next(
+      new ErrorHandler(
+        "You can only create groups within your organization",
+        403
+      )
+    );
 
   await Chat.create({
     name,
@@ -93,6 +100,16 @@ const addMembers = TryCatch(async (req, res, next) => {
 
   const chat = await Chat.findById(chatId);
 
+  // Ensure sender shares org with all chat members
+  const sameOrgWithExisting = await allMembersShareOrgWith(
+    req.user,
+    chat.members
+  );
+  if (!sameOrgWithExisting)
+    return next(
+      new ErrorHandler("Cross-organization messages are not allowed", 403)
+    );
+
   if (!chat) return next(new ErrorHandler("Chat not found", 404));
 
   if (!chat.groupChat)
@@ -108,6 +125,13 @@ const addMembers = TryCatch(async (req, res, next) => {
   const uniqueMembers = allNewMembers
     .filter((i) => !chat.members.includes(i._id.toString()))
     .map((i) => i._id);
+
+  // Block adding members from other organizations
+  const sameOrgWithNew = await allMembersShareOrgWith(req.user, uniqueMembers);
+  if (!sameOrgWithNew)
+    return next(
+      new ErrorHandler("You can only add members from your organization", 403)
+    );
 
   chat.members.push(...uniqueMembers);
 
@@ -211,60 +235,6 @@ const leaveGroup = TryCatch(async (req, res, next) => {
   return res.status(200).json({
     success: true,
     message: "Leave Group Successfully",
-  });
-});
-
-const sendAttachments = TryCatch(async (req, res, next) => {
-  const { chatId } = req.body;
-
-  const files = req.files || [];
-
-  if (files.length < 1)
-    return next(new ErrorHandler("Please Upload Attachments", 400));
-
-  if (files.length > 5)
-    return next(new ErrorHandler("Files Can't be more than 5", 400));
-
-  const [chat, me] = await Promise.all([
-    Chat.findById(chatId),
-    User.findById(req.user, "name"),
-  ]);
-
-  if (!chat) return next(new ErrorHandler("Chat not found", 404));
-
-  if (files.length < 1)
-    return next(new ErrorHandler("Please provide attachments", 400));
-
-  //   Upload files here
-  const attachments = await uploadFilesToCloudinary(files);
-
-  const messageForDB = {
-    content: "",
-    attachments,
-    sender: me._id,
-    chat: chatId,
-  };
-
-  const messageForRealTime = {
-    ...messageForDB,
-    sender: {
-      _id: me._id,
-      name: me.name,
-    },
-  };
-
-  const message = await Message.create(messageForDB);
-
-  emitEvent(req, NEW_MESSAGE, chat.members, {
-    message: messageForRealTime,
-    chatId,
-  });
-
-  emitEvent(req, NEW_MESSAGE_ALERT, chat.members, { chatId });
-
-  return res.status(200).json({
-    success: true,
-    message,
   });
 });
 
@@ -414,7 +384,6 @@ export {
   addMembers,
   removeMember,
   leaveGroup,
-  sendAttachments,
   getChatDetails,
   renameGroup,
   deleteChat,

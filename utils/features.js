@@ -17,7 +17,6 @@ const connectDB = (uri) => {
     .then((data) => console.log(`Connected to DB: ${data.connection.host}`))
     .catch((err) => {
       throw err;
-      
     });
 };
 

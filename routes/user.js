@@ -9,6 +9,9 @@ import {
   newUser,
   searchUser,
   sendFriendRequest,
+  createOrganization,
+  getMyOrganizations,
+  getJoinedOrganizations,
 } from "../controllers/user.js";
 import {
   acceptRequestValidator,
@@ -52,5 +55,10 @@ app.put(
 app.get("/notifications", getMyNotifications);
 
 app.get("/friends", getMyFriends);
+
+// Organizations
+app.post("/organizations", createOrganization);
+app.get("/organizations", getMyOrganizations);
+app.get("/organizations/joined", getJoinedOrganizations);
 
 export default app;
